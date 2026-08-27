@@ -5,6 +5,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use regex::Regex;
+use tokio::runtime::{Builder};
 use crate::{db, prompt};
 use crate::db::get_default_config;
 use crate::template::get_apache_config_template;
@@ -60,7 +61,20 @@ pub fn new_site(domain: &String, verbose: u8) {
     }
 
     // create database
-    _ = db::create_database(db_name, get_default_config(&db_pass));
+    // let db_result = db::create_database(&db_name, get_default_config(&db_pass));
+
+    let rt = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let db_result = rt.block_on(
+        db::create_database(&db_name, get_default_config(&db_pass))
+    );
+
+    if db_result.is_err() {
+        println!("Failed to create database: {}", db_result.unwrap_err());
+    }
 
     // TODO: If is_wp install and configure wordpress
 
@@ -84,8 +98,8 @@ pub fn new_site(domain: &String, verbose: u8) {
     let enabled_conf_path = format!("/etc/apache2/sites-enabled/{}.conf", domain);
 
     if verbose >= 1 {
-        println!("Enabled conf: {}", conf_path);
-        println!("Enabled conf: {}", enabled_conf_path);
+        println!("Conf path: {}", conf_path);
+        println!("Enabled conf path: {}", enabled_conf_path);
     }
 
     let apache_conf = get_apache_config_template(
@@ -106,17 +120,17 @@ pub fn new_site(domain: &String, verbose: u8) {
     }
 
     if verbose >= 1 {
-        println!("Creating Apache config: {}", conf_path);
-    }
-
-    if verbose >= 1 {
         println!("Creating symbolic link: {} -> {}", conf_path, enabled_conf_path);
     }
 
     // create site-enabled symlink
-    unix_fs::symlink(&conf_path, &enabled_conf_path).unwrap();
+    if Path::new(&enabled_conf_path).exists() {
+        println!("Site configuration already exists: {}", enabled_conf_path);
+    } else {
+        unix_fs::symlink(&conf_path, &enabled_conf_path).unwrap();
+    }
 
-    let www_path = String::from(format!("/var/www/{}", domain));
+    let www_path = String::from(format!("/var/www/html/{}", domain));
     if Path::new(&www_path).exists() {
         println!("Skipping symbolic link. Path exists: {}", www_path);
     } else {
@@ -125,7 +139,7 @@ pub fn new_site(domain: &String, verbose: u8) {
         }
 
         // symlink site path and /var/www/html/site.domain
-        unix_fs::symlink(site_path, &www_path).unwrap();
+        _ = unix_fs::symlink(site_path, &www_path);
     }
 
     if verbose >= 1 {
@@ -137,34 +151,47 @@ pub fn new_site(domain: &String, verbose: u8) {
     let dns_content = fs::read_to_string("/etc/hosts");
     if dns_content.unwrap().contains(&dns_entry) {
         if verbose >= 1 {
-            print!("Hosts file already contains entry: {}", dns_entry);
+            println!("Hosts file already contains entry: {}", dns_entry);
         }
     } else {
         // append dnsEntry to hosts file
-        let mut hosts_file = OpenOptions::new()
+        let hosts_file_create = OpenOptions::new()
             .append(true)
-            .open("/etc/hosts")
-            .unwrap();
+            .open("/etc/hosts");
 
-        hosts_file.write_all(dns_entry.as_bytes()).unwrap();
+        match hosts_file_create {
+            Ok(mut file) => {
+                _ = file.write_all(dns_entry.as_bytes());
 
-        if verbose >= 1 {
-            print!("Hosts file updated: {}", dns_entry);
+                if verbose >= 1 {
+                    println!("Hosts file updated: {}", dns_entry);
+                }
+            },
+            Err(_) => {
+                println!("Failed to write to hosts file: {}", dns_entry);
+            }
         }
     }
 
     // restart apache
-    let output = ShellCommand::new("service")
+    let output_result = ShellCommand::new("service")
         .arg("apache2")
         .arg("restart")
-        .output()
-        .unwrap();
+        .output();
 
-    if !output.status.success() {
-        println!("Failed to restart Apache service: {}", output.status);
-    } else if verbose >= 1 {
-        println!("Apache service restarted");
+    match output_result {
+        Ok(output) => {
+            if !output.status.success() {
+                println!("Failed to restart Apache service: {}", output.status);
+            } else if verbose >= 1 {
+                println!("Apache service restarted");
+            }
+        },
+        Err(e) => {
+            println!("Service restart failed with error: {}", e)
+        }
     }
+
 
     println!("Setup complete: {}", domain);
 }
@@ -173,7 +200,7 @@ pub fn new_site(domain: &String, verbose: u8) {
 fn slugify(s: &str) -> String {
     let re = Regex::new(r"[^a-zA-Z0-9_-]").unwrap();
 
-    re.replace_all(s, "-").into_owned()
+    re.replace_all(s, "_").into_owned()
 }
 
 fn prompt_for_php_version() -> String {

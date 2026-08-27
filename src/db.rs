@@ -12,6 +12,7 @@ pub struct DbConfig<'a> {
     pub port: u16,
     pub user: &'a str,
     pub pass: &'a str,
+    pub debug: bool,
 }
 
 
@@ -22,20 +23,35 @@ pub fn get_default_config(pass: &str) -> DbConfig<'_> {
         port: 3306,
         user: "root",
         pass,
+        debug: true,
     }
 }
 
 pub async fn create_database(
-    name: String,
+    name: &str,
     config: DbConfig<'_>,
 ) -> Result<(), sqlx::Error> {
+    let driver = match config.driver {
+        DbDriver::Mysql => "mysql",
+        DbDriver::Postgres => "postgres",
+        DbDriver::Sqlite => "sqlite",
+    };
+
     let dsn = format!(
-        "{}:{}@tcp({}:{})/", config.user, config.pass, config.host, config.port
+        "{}://{}:{}@{}:{}/", driver, config.user, config.pass, config.host, config.port
     );
+
+    if config.debug {
+        println!("Connecting: {}", dsn);
+    }
 
     let pool = connect(&dsn).await?;
 
     let statement = format!("CREATE DATABASE {}", name);
+
+    if config.debug {
+        println!("Creating database: {}", statement);
+    }
 
     sqlx::query(
         sqlx::AssertSqlSafe(statement)
