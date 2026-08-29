@@ -1,5 +1,4 @@
 use std::{env, fs};
-use std::fmt::format;
 use std::os::unix::fs as unix_fs;
 use std::process::Command as ShellCommand;
 use std::fs::OpenOptions;
