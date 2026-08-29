@@ -185,23 +185,7 @@ pub fn new_site(domain: &String, verbose: u8) {
     }
 
     // restart apache
-    let output_result = ShellCommand::new("service")
-        .arg("apache2")
-        .arg("restart")
-        .output();
-
-    match output_result {
-        Ok(output) => {
-            if !output.status.success() {
-                println!("Failed to restart Apache service: {}", output.status);
-            } else {
-                vprint(1, "Apache service restarted");
-            }
-        },
-        Err(e) => {
-            eprintln!("Service restart failed with error: {}", e)
-        }
-    }
+    restart_apache(&vprint);
 
     println!("Setup complete: {}", domain);
 }
@@ -287,6 +271,28 @@ pub fn remove_site(domain: &str, verbose: u8) {
             eprintln!("Thread builder error: {}", e);
         }
     }
+
+    restart_apache(&vprint);
+}
+
+fn restart_apache(vprint: &impl Fn(u8, &str)) {
+    let output_result = ShellCommand::new("service")
+        .arg("apache2")
+        .arg("restart")
+        .output();
+
+    match output_result {
+        Ok(output) => {
+            if !output.status.success() {
+                println!("Failed to restart Apache service: {}", output.status);
+            } else {
+                vprint(1, "Apache service restarted");
+            }
+        },
+        Err(e) => {
+            eprintln!("Service restart failed with error: {}", e)
+        }
+    }
 }
 
 fn handle_remove_site_file_removal(path: &str) {
@@ -294,10 +300,10 @@ fn handle_remove_site_file_removal(path: &str) {
 
     match result {
         Ok(_) => {
-            println!("{} result", path);
+            println!("Deleted {}", path);
         }
         Err(err) => {
-            eprintln!("Failed to remove {}: {}", path, err);
+            eprintln!("Failed to delete {}: {}", path, err);
         }
     }
 }
