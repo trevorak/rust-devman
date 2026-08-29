@@ -48,15 +48,18 @@ fn main() {
     if let Some(domain) = matches.get_one::<String>("new") {
         let validation_result = parse_domain_name(&domain);
 
-        if validation_result.is_err() {
-            println!("{}", validation_result.unwrap_err());
-            exit(1);
+        match validation_result {
+            Ok(_) => {
+                commands::new_site(domain, v);
+            },
+            Err(e) => {
+                eprintln!("{}", e);
+                exit(1);
+            }
         }
-
-        commands::new_site(domain, v);
     }
 
-    if let Some(remove) = matches.get_one::<String>("remove") {
-        println!("remove domain: {}", remove);
+    if let Some(domain) = matches.get_one::<String>("remove") {
+        commands::remove_site(&domain, v)
     }
 }

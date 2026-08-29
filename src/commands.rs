@@ -1,4 +1,5 @@
 use std::{env, fs};
+use std::fmt::format;
 use std::os::unix::fs as unix_fs;
 use std::process::Command as ShellCommand;
 use std::fs::OpenOptions;
@@ -38,7 +39,6 @@ pub fn new_site(domain: &String, verbose: u8) {
 
     // get mysql pass
     let db_pass = prompt::get_string("Enter MySQL password: ");
-    _ = db_pass;
 
     // get php version
     let php_version = prompt_for_php_version();
@@ -205,6 +205,102 @@ pub fn new_site(domain: &String, verbose: u8) {
     }
 
     println!("Setup complete: {}", domain);
+}
+
+pub fn remove_site(domain: &str, verbose: u8) {
+    let vprint = get_verbose_conditional_print(verbose);
+
+    sudo::with_env(&["USER", "RUST_BACKTRACE"]).unwrap();
+
+    let confirm = prompt::get_string(
+        format!("Are you sure you want to remove {}? (Y/n) [n]: ", domain).as_str(),
+    ).to_lowercase();
+
+    if confirm != "y" {
+        return;
+    }
+
+    // remove /etc/hosts entry
+    let hosts_file = fs::read_to_string("/etc/hosts");
+    match hosts_file {
+        Ok(content) => {
+            let modified = content.replace(
+                format!("127.0.0.1 {}", domain).as_str(),
+                ""
+            );
+
+            let write = fs::write("/etc/hosts", modified);
+            match write {
+                Ok(_) => {
+                    println!("Hosts file updated");
+                },
+                Err(err) => {
+                    eprintln!("Failed to write to /etc/hosts: {}", err);
+                }
+            }
+        },
+        Err(err) => {
+            eprintln!("Failed to read hosts file: {}", err);
+        }
+    }
+
+    handle_remove_site_file_removal(
+        format!("/var/www/html/{}", domain).as_str()
+    );
+
+    handle_remove_site_file_removal(
+        format!("/etc/apache2/sites-enabled/{}.conf", domain).as_str()
+    );
+
+    handle_remove_site_file_removal(
+        format!("/etc/apache2/sites-available/{}.conf", domain).as_str()
+    );
+
+    // remove database
+    // prompt first to confirm database removal
+    let db_confirm = prompt::get_string("Would you like to remove the database? (Y/n) [n]: ");
+    if db_confirm.to_lowercase() != "y" {
+        return;
+    }
+
+    let db_pass = prompt::get_string("Enter MySQL root password: ");
+    let db_name = slugify(domain);
+
+    match Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => {
+            let db_result = rt.block_on(
+                db::drop_database(
+                    &db_name,
+                    get_default_config(&db_pass)
+                )
+            );
+
+            match db_result {
+                Ok(_) => {
+                    vprint(1, "Database dropped")
+                },
+                Err(err) => {
+                    eprintln!("Database error: {}", err);
+                }
+            }
+        },
+        Err(e) => {
+            eprintln!("Thread builder error: {}", e);
+        }
+    }
+}
+
+fn handle_remove_site_file_removal(path: &str) {
+    let result = fs::remove_file(path);
+
+    match result {
+        Ok(_) => {
+            println!("{} result", path);
+        }
+        Err(err) => {
+            eprintln!("Failed to remove {}: {}", path, err);
+        }
+    }
 }
 
 fn get_verbose_conditional_print(level: u8) -> impl Fn(u8, &str) {
