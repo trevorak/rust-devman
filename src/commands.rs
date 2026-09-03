@@ -1,27 +1,28 @@
-use std::{env, fs::{
-    self,
-    File,
-    OpenOptions,
-}, io, io::{
-    Write,
-}, os::{
-    unix::{fs as unix_fs}
-}, path::{
-    Path,
-}, process::Command as ShellCommand};
+use std::{
+    env,
+    fs::{
+        self,
+        File,
+        OpenOptions,
+    },
+    io::{
+        self,
+        Write,
+    },
+    os::unix::fs as unix_fs,
+    path::Path,
+    process::Command as ShellCommand,
+};
 use std::io::BufRead;
 use flate2::read::GzDecoder;
 use regex::Regex;
-use tokio::runtime::{Builder};
+use tokio::runtime::Builder;
 use tar::Archive;
 use crate::{
     db,
     http,
     prompt,
-    template::{
-        self,
-        get_apache_config_template,
-    }
+    template,
 };
 
 pub fn new_site(domain: &String, verbose: u8) {
@@ -126,7 +127,7 @@ pub fn new_site(domain: &String, verbose: u8) {
     vprint(1, format!("Conf path: {}", conf_path).as_str());
     vprint(1, format!("Enable conf path: {}", enabled_conf_path).as_str());
 
-    let apache_conf = get_apache_config_template(
+    let apache_conf = template::get_apache_config_template(
         domain,
         &link_doc_root,
         &php_version
@@ -145,7 +146,7 @@ pub fn new_site(domain: &String, verbose: u8) {
                 vprint(1, "Site configuration created")
             }
             Err(err) => {
-                eprintln!("Error wrigin site config: {}", err);
+                eprintln!("Error writing site config: {}", err);
             }
         }
     }
@@ -356,7 +357,7 @@ fn setup_wp(
     db_user: &str,
     db_pass: &str,
     verbose: u8,
-) -> Result<(), std::io::Error> {
+) -> Result<(), io::Error> {
     let vprint = get_verbose_conditional_print(verbose);
 
     // get htaccess
@@ -389,8 +390,8 @@ fn setup_wp(
         Err(err) => {
             eprintln!("Failed to download WP archive: {}", err);
 
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
                 format!("Failed to download WP archive: {}", err)
             ))
         }
@@ -400,8 +401,8 @@ fn setup_wp(
     let tar_gz = match File::open(download_path) {
         Ok(file) => file,
         Err(err) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
                 format!("Failed to open WP archive: {}", err)
             ))
         }
@@ -453,8 +454,8 @@ fn setup_wp(
             }
         }
         Err(err) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidFilename,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidFilename,
                 format!("Failed to read WP config file: {}", err)
             ))
         }
@@ -502,7 +503,7 @@ fn find_site_php_version(
 
     let site_config_path = format!("/etc/apache2/sites-available/{}.conf", domain);
 
-    let file = fs::File::open(site_config_path)?;
+    let file = File::open(site_config_path)?;
     let reader = io::BufReader::new(file);
 
     let result = Regex::new(r"php\d+(?:\.\d+)*-fpm");
