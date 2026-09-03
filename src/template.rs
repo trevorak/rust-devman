@@ -11,3 +11,7 @@ pub fn get_apache_config_template(
         php_version = php_version
     )
 }
+
+pub fn get_wp_htaccess_template() -> String {
+    include_str!("templates/wp.htaccess").to_string()
+}

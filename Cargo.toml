@@ -1,16 +1,19 @@
 [package]
 name = "devman"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
 addr = "0.15.6"
 clap = { version = "4.6.6", features = ["derive", "cargo"]}
 clap_complete = "4.6.9"
+flate2 = "1.1.10"
 libc = "0.2.189"
 regex = "1.13.1"
+reqwest = { version = "0.13.4", features = ["blocking"] }
 sqlx = { version = "0.9.0", features = ["any", "mysql", "postgres", "sqlite", "runtime-tokio", "tls-rustls"]}
 sudo = "0.6.0"
+tar = "0.4.46"
 tokio = { version = "1.53.1", features = ["full"]}
 users = "0.11.0"
 

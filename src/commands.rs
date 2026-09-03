@@ -1,14 +1,28 @@
-use std::{env, fs};
-use std::os::unix::fs as unix_fs;
-use std::process::Command as ShellCommand;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::{Path};
+use std::{env, fs::{
+    self,
+    File,
+    OpenOptions,
+}, io, io::{
+    Write,
+}, os::{
+    unix::{fs as unix_fs}
+}, path::{
+    Path,
+}, process::Command as ShellCommand};
+use std::io::BufRead;
+use flate2::read::GzDecoder;
 use regex::Regex;
 use tokio::runtime::{Builder};
-use crate::{db, prompt};
-use crate::db::get_default_config;
-use crate::template::get_apache_config_template;
+use tar::Archive;
+use crate::{
+    db,
+    http,
+    prompt,
+    template::{
+        self,
+        get_apache_config_template,
+    }
+};
 
 pub fn new_site(domain: &String, verbose: u8) {
     let vprint = get_verbose_conditional_print(verbose);
@@ -56,7 +70,7 @@ pub fn new_site(domain: &String, verbose: u8) {
     // println!("username: {}", username);
 
     println!();
-    let confirm = prompt::get_string("Confirm (Y/n) [Y]:");
+    let confirm = prompt::get_string("Confirm (Y/n) [Y]: ");
     if confirm.to_lowercase() == "n" {
         return;
     }
@@ -65,7 +79,7 @@ pub fn new_site(domain: &String, verbose: u8) {
     match Builder::new_current_thread().enable_all().build() {
         Ok(rt) => {
             let db_result = rt.block_on(
-                db::create_database(&db_name, get_default_config(&db_pass))
+                db::create_database(&db_name, db::get_default_config(&db_pass))
             );
 
             match db_result {
@@ -82,7 +96,15 @@ pub fn new_site(domain: &String, verbose: u8) {
         }
     }
 
-    // TODO: If is_wp install and configure wordpress
+    if is_wp {
+        _ = setup_wp(
+            &site_path,
+            &db_name,
+            &db_user,
+            &db_pass,
+            verbose
+        );
+    }
 
     // get the document root with symlink
     // it will be composed of the site domain + the path after the site_root in doc_root
@@ -116,7 +138,16 @@ pub fn new_site(domain: &String, verbose: u8) {
     } else {
         vprint(2, format!("Creating site config: {}", conf_path).as_str());
 
-        fs::write(&conf_path, &apache_conf).unwrap();
+        let result = fs::write(&conf_path, &apache_conf);
+
+        match result {
+            Ok(_) => {
+                vprint(1, "Site configuration created")
+            }
+            Err(err) => {
+                eprintln!("Error wrigin site config: {}", err);
+            }
+        }
     }
 
     vprint(1, format!("Creating symbolic link: {} -> {}", conf_path, enabled_conf_path).as_str());
@@ -185,7 +216,12 @@ pub fn new_site(domain: &String, verbose: u8) {
     }
 
     // restart apache
-    restart_apache(&vprint);
+    let result = restart_apache();
+    if let Err(e) = result {
+        eprintln!("{}", e);
+    } else {
+        vprint(1, "Apache restarted successfully")
+    }
 
     println!("Setup complete: {}", domain);
 }
@@ -254,7 +290,7 @@ pub fn remove_site(domain: &str, verbose: u8) {
             let db_result = rt.block_on(
                 db::drop_database(
                     &db_name,
-                    get_default_config(&db_pass)
+                    db::get_default_config(&db_pass)
                 )
             );
 
@@ -272,27 +308,221 @@ pub fn remove_site(domain: &str, verbose: u8) {
         }
     }
 
-    restart_apache(&vprint);
+    let result = restart_apache();
+    if let Err(e) = result {
+        eprintln!("{}", e);
+    } else {
+        vprint(1, "Apache restarted successfully")
+    }
 }
 
-fn restart_apache(vprint: &impl Fn(u8, &str)) {
+pub fn restart_site(
+    domain: &str,
+    verbose: u8,
+) {
+    let vprint = get_verbose_conditional_print(verbose);
+
+    match find_site_php_version(&domain, verbose) {
+        Ok(Some(php_fpm_string)) => {
+            vprint(1, format!("Found: {}", php_fpm_string).as_str());
+
+            // restart php
+            let result = restart_service(php_fpm_string.as_str());
+            if let Err(e) = result {
+                eprintln!("{}", e);
+            } else {
+                vprint(0, format!("Restarted {}", php_fpm_string).as_str());
+            }
+        },
+        Ok(None) => {
+            eprintln!("Failed to find site php version: {}", domain);
+        }
+        Err(err) => {
+            eprintln!("Failed to find site php version: {}", err);
+        }
+    };
+
+    let result = restart_apache();
+    if let Err(e) = result {
+        eprintln!("{}", e);
+    } else {
+        vprint(0, "Restarted Apache");
+    }
+}
+
+fn setup_wp(
+    site_path: &str,
+    db_name: &str,
+    db_user: &str,
+    db_pass: &str,
+    verbose: u8,
+) -> Result<(), std::io::Error> {
+    let vprint = get_verbose_conditional_print(verbose);
+
+    // get htaccess
+    let htaccess = template::get_wp_htaccess_template();
+
+    let htaccess_path = format!("{}/.htaccess", site_path);
+
+    let write_result = fs::write(htaccess_path, &htaccess);
+    match write_result {
+        Ok(_) => {
+            vprint(1, "WP htaccess created")
+        }
+        Err(err) => {
+            eprintln!("Failed to write htaccess: {}", err);
+        }
+    }
+
+    vprint(1, "Downloading WordPress archive");
+
+    let download_path = "/etc/latest.tar.gz";
+    let download_response = http::download_remote_file(
+        "https://wordpress.org/latest.tar.gz",
+        download_path
+    );
+
+    match download_response {
+        Ok(_) => {
+            vprint(1, "WP archive download complete");
+        }
+        Err(err) => {
+            eprintln!("Failed to download WP archive: {}", err);
+
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to download WP archive: {}", err)
+            ))
+        }
+    }
+
+    // unpack archive
+    let tar_gz = match File::open(download_path) {
+        Ok(file) => file,
+        Err(err) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to open WP archive: {}", err)
+            ))
+        }
+    };
+
+    let tar = GzDecoder::new(tar_gz);
+    let mut archive = Archive::new(tar);
+
+    let prefix = Path::new("wordpress");
+    let target_base = Path::new(site_path);
+
+    // move files to site_path
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+
+        let stripped_path = match path.strip_prefix(prefix) {
+            Ok(p) => {
+                if p.as_os_str().is_empty() {
+                    continue;
+                }
+
+                p
+            },
+            Err(_) => &path,
+        };
+
+        let dest_path = target_base.join(stripped_path);
+        entry.unpack(&dest_path)?;
+    }
+
+    // replace db_creds in wp-config-sample.php
+    let wp_config_file = fs::read_to_string(format!("{}/wp-config-sample.php", site_path));
+    match wp_config_file {
+        Ok(mut content) => {
+            content = content.replace("localhost", "127.0.0.1");
+            content = content.replace("database_name_here", &db_name);
+            content = content.replace("username_here", &db_user);
+            content = content.replace("password_here", &db_pass);
+
+            let result = fs::write(format!("{}/wp-config.php", site_path), content);
+            match result {
+                Ok(_) => {
+                    vprint(1, "WP config updated")
+                }
+                Err(err) => {
+                    eprintln!("Failed to write wp-config: {}", err);
+                }
+            }
+        }
+        Err(err) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidFilename,
+                format!("Failed to read WP config file: {}", err)
+            ))
+        }
+    }
+
+    // TODO check ownership and permissions
+
+    Ok(())
+}
+
+fn restart_apache() -> Result<(), io::Error> {
+    restart_service("apache2")
+}
+
+fn restart_service(
+    service: &str,
+) -> Result<(), io::Error> {
     let output_result = ShellCommand::new("service")
-        .arg("apache2")
+        .arg(service)
         .arg("restart")
         .output();
 
     match output_result {
         Ok(output) => {
             if !output.status.success() {
-                println!("Failed to restart Apache service: {}", output.status);
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to restart service: {}", output.status)
+                ))
             } else {
-                vprint(1, "Apache service restarted");
+                Ok(())
             }
         },
         Err(e) => {
-            eprintln!("Service restart failed with error: {}", e)
+            Err(e)
         }
     }
+}
+
+fn find_site_php_version(
+    domain: &str,
+    verbose: u8,
+) -> io::Result<Option<String>> {
+    let vprint = get_verbose_conditional_print(verbose);
+
+    let site_config_path = format!("/etc/apache2/sites-available/{}.conf", domain);
+
+    let file = fs::File::open(site_config_path)?;
+    let reader = io::BufReader::new(file);
+
+    let result = Regex::new(r"php\d+(?:\.\d+)*-fpm");
+    let re = match result {
+        Ok(re) => re,
+        Err(err) => {
+            vprint(0, format!("Error compiling regex for php version: {}", err).as_str());
+            return Ok(None)
+        }
+    };
+
+    for line in reader.lines() {
+        let line = line?;
+
+        if let Some(re_match) = re.find(&line) {
+            return Ok(Some(re_match.as_str().to_string()));
+        }
+    }
+
+    Ok(None)
 }
 
 fn handle_remove_site_file_removal(path: &str) {
@@ -319,7 +549,7 @@ fn get_verbose_conditional_print(level: u8) -> impl Fn(u8, &str) {
 
 // replace with underscores
 fn slugify(s: &str) -> String {
-    let re = Regex::new(r"[^a-zA-Z0-9_-]");
+    let re = Regex::new(r"[^a-zA-Z0-9_]");
 
     match re {
         Ok(regex) => {

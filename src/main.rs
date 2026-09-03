@@ -3,6 +3,7 @@ pub mod user;
 pub mod prompt;
 pub mod db;
 pub mod template;
+mod http;
 
 use std::process::exit;
 use clap::{Command, arg, value_parser};
@@ -17,17 +18,25 @@ fn main() {
         )
         .arg(
             arg!(
-                -n --new <DOMAIN> "Site domain"
+                -n --new <DOMAIN> "Configure a new site"
             )
             .required(false)
             .value_parser(value_parser!(String)),
         )
         .arg(
             arg!(
-                -r --remove <DOMAIN> "Domain for the site to be removed"
+                -r --remove <DOMAIN> "Remove a site's configuration"
             )
             .required(false)
             .value_parser(value_parser!(String)),
+        )
+        // TODO: Add restart command
+        //  devman restart site.domain (restarts php-{version}-fpm and apache)
+        .arg(
+            arg!(
+                --restart <DOMAIN> "Restart Apache and the PHP-FPM service being used by a site"
+            )
+                .value_parser(value_parser!(String))
         )
         .get_matches();
 
@@ -61,5 +70,9 @@ fn main() {
 
     if let Some(domain) = matches.get_one::<String>("remove") {
         commands::remove_site(&domain, v)
+    }
+
+    if let Some(domain) = matches.get_one::<String>("restart") {
+        commands::restart_site(&domain, v)
     }
 }
